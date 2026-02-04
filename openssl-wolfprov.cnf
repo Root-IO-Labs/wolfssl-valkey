@@ -1,0 +1,46 @@
+# OpenSSL 3 Configuration for wolfProvider with FIPS
+# This configuration loads wolfProvider which uses wolfSSL FIPS v5 backend
+#
+# IMPORTANT: wolfProvider provides FIPS 140-3 validated cryptography automatically.
+# You do NOT need to call crypto.setFips(1) in Node.js - wolfProvider IS the FIPS compliance.
+#
+# All cryptographic operations will use wolfSSL FIPS v5 through the wolfProvider.
+
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+# Load wolfProvider - this wraps wolfSSL FIPS v5 cryptography
+# wolfProvider provides FIPS 140-3 validated algorithms
+wolfprov = wolfprov_sect
+
+# Optional: Load default provider as fallback for non-FIPS operations
+# FIPS Compliance Note: Enabling default provider allows non-FIPS algorithms (MD5, etc.)
+# For strict FIPS compliance, keep default provider disabled (commented out)
+# default = default_sect
+
+[wolfprov_sect]
+# Path to wolfProvider shared library
+module = /usr/local/lib64/ossl-modules/libwolfprov.so
+activate = 1
+
+[default_sect]
+# Default provider - provides non-FIPS algorithms
+# Keep deactivated for strict FIPS compliance
+activate = 0
+
+# Note: We do NOT set "default_properties = fips=yes" here because:
+# 1. wolfProvider algorithms don't advertise the fips property correctly
+# 2. It would block all operations including FIPS-approved ones
+# 3. wolfProvider itself IS FIPS validated - using it means FIPS compliance
+#
+# FIPS compliance is achieved by:
+# - Using only wolfProvider (which uses wolfSSL FIPS v5)
+# - Not enabling the default provider (which has non-FIPS algorithms)
+
+[system_default_sect]
+# TLS security settings
+MinProtocol = TLSv1.2
+CipherString = DEFAULT:@SECLEVEL=2

@@ -1,0 +1,217 @@
+diff --git a/src/debug.c b/src/debug.c
+index 4a57cd4..f0b8c4c 100644
+--- a/src/debug.c
++++ b/src/debug.c
+@@ -29,7 +29,9 @@
+ 
+ #include "server.h"
+ #include "util.h"
+-#include "sha1.h" /* SHA1 is used for DEBUG DIGEST */
++#include <openssl/evp.h>
++#include <openssl/sha.h>
++/* OpenSSL SHA-256 is used for FIPS-compliant DEBUG DIGEST */
+ #include "crc64.h"
+ #include "bio.h"
+ #include "quicklist.h"
+@@ -84,22 +86,32 @@ void sigalrmSignalHandler(int sig, siginfo_t *info, void *secret);
+ 
+ /* ================================= Debugging ============================== */
+ 
+-/* Compute the sha1 of string at 's' with 'len' bytes long.
+- * The SHA1 is then xored against the string pointed by digest.
++/* Compute the SHA-256 of string at 's' with 'len' bytes long using OpenSSL.
++ * The SHA-256 is then xored against the string pointed by digest.
+  * Since xor is commutative, this operation is used in order to
+  * "add" digests relative to unordered elements.
+  *
+- * So digest(a,b,c,d) will be the same of digest(b,a,c,d) */
++ * So digest(a,b,c,d) will be the same as digest(b,a,c,d) */
+ void xorDigest(unsigned char *digest, const void *ptr, size_t len) {
+-    SHA1_CTX ctx;
+-    unsigned char hash[20];
++    unsigned char hash[SHA256_DIGEST_LENGTH];
+     int j;
+ 
+-    SHA1Init(&ctx);
+-    SHA1Update(&ctx, ptr, len);
+-    SHA1Final(hash, &ctx);
++    /* Use OpenSSL EVP interface for FIPS compliance */
++    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
++    if (mdctx == NULL) {
++        /* Fallback: use direct SHA256 if EVP fails */
++        SHA256((const unsigned char *)ptr, len, hash);
++    } else {
++        unsigned int hash_len = SHA256_DIGEST_LENGTH;
++        EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
++        EVP_DigestUpdate(mdctx, ptr, len);
++        EVP_DigestFinal_ex(mdctx, hash, &hash_len);
++        EVP_MD_CTX_free(mdctx);
++    }
+ 
+-    for (j = 0; j < 20; j++) digest[j] ^= hash[j];
++    /* XOR first 20 bytes to maintain backward compatibility with SHA-1 digest size */
++    for (j = 0; j < 20; j++)
++        digest[j] ^= hash[j];
+ }
+ 
+ void xorStringObjectDigest(unsigned char *digest, robj *o) {
+@@ -108,13 +120,13 @@ void xorStringObjectDigest(unsigned char *digest, robj *o) {
+     decrRefCount(o);
+ }
+ 
+-/* This function instead of just computing the SHA1 and xoring it
++/* This function instead of just computing the SHA-256 and xoring it
+  * against digest, also perform the digest of "digest" itself and
+  * replace the old value with the new one.
+  *
+  * So the final digest will be:
+  *
+- * digest = SHA1(digest xor SHA1(data))
++ * digest = SHA-256(digest xor SHA-256(data))
+  *
+  * This function is used every time we want to preserve the order so
+  * that digest(a,b,c,d) will be different than digest(b,c,d,a)
+@@ -123,12 +135,27 @@ void xorStringObjectDigest(unsigned char *digest, robj *o) {
+  * will lead to a different digest compared to "fo", "obar".
+  */
+ void mixDigest(unsigned char *digest, const void *ptr, size_t len) {
+-    SHA1_CTX ctx;
++    unsigned char hash[SHA256_DIGEST_LENGTH];
+ 
++    /* First: XOR with hash of input data */
+     xorDigest(digest, ptr, len);
+-    SHA1Init(&ctx);
+-    SHA1Update(&ctx, digest, 20);
+-    SHA1Final(digest, &ctx);
++
++    /* Second: Hash the XORed digest using OpenSSL */
++    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
++    if (mdctx == NULL) {
++        /* Fallback: use direct SHA256 if EVP fails */
++        SHA256(digest, 20, hash);
++    } else {
++        unsigned int hash_len = SHA256_DIGEST_LENGTH;
++        EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
++        EVP_DigestUpdate(mdctx, digest, 20);
++        EVP_DigestFinal_ex(mdctx, hash, &hash_len);
++        EVP_MD_CTX_free(mdctx);
++    }
++
++    /* Replace digest with new hash (first 20 bytes for compatibility) */
++    for (int j = 0; j < 20; j++)
++        digest[j] = hash[j];
+ }
+ 
+ void mixStringObjectDigest(unsigned char *digest, robj *o) {
+diff --git a/src/eval.c b/src/eval.c
+index 695cd4c..0416ef0 100644
+--- a/src/eval.c
++++ b/src/eval.c
+@@ -43,7 +43,9 @@
+ 
+ #include "eval.h"
+ #include "server.h"
+-#include "sha1.h"
++#include <openssl/evp.h>
++#include <openssl/sha.h>
++/* OpenSSL SHA-256 is used for FIPS-compliant hashing */
+ #include "rand.h"
+ #include "cluster.h"
+ #include "monotonic.h"
+@@ -114,23 +116,32 @@ void evalInit(void) {
+  * Utility functions.
+  * ------------------------------------------------------------------------- */
+ 
+-/* Perform the SHA1 of the input string. We use this both for hashing script
+- * bodies in order to obtain the Lua function name, and in the implementation
+- * of server.sha1().
++/* Perform the SHA-256 of the input string using OpenSSL for FIPS compliance.
++ * We use this both for hashing script bodies in order to obtain the Lua
++ * function name, and in the implementation of server.sha256().
+  *
+- * 'digest' should point to a 41 bytes buffer: 40 for SHA1 converted into an
+- * hexadecimal number, plus 1 byte for null term. */
+-void sha1hex(char *digest, char *script, size_t len) {
+-    SHA1_CTX ctx;
+-    unsigned char hash[20];
++ * 'digest' should point to a 41 bytes buffer: 40 for SHA-256 (truncated)
++ * converted into an hexadecimal number, plus 1 byte for null term.
++ * We truncate SHA-256 to 20 bytes for backward compatibility with SHA-1. */
++void sha256hex(char *digest, char *script, size_t len) {
++    unsigned char hash[SHA256_DIGEST_LENGTH];
+     char *cset = "0123456789abcdef";
+-    int j;
++    unsigned int hash_len = SHA256_DIGEST_LENGTH;
+ 
+-    SHA1Init(&ctx);
+-    SHA1Update(&ctx, (unsigned char *)script, len);
+-    SHA1Final(hash, &ctx);
++    /* Use OpenSSL EVP interface for FIPS compliance */
++    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
++    if (mdctx == NULL) {
++        /* Fallback: use direct SHA256 if EVP fails */
++        SHA256((unsigned char *)script, len, hash);
++    } else {
++        EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
++        EVP_DigestUpdate(mdctx, script, len);
++        EVP_DigestFinal_ex(mdctx, hash, &hash_len);
++        EVP_MD_CTX_free(mdctx);
++    }
+ 
+-    for (j = 0; j < 20; j++) {
++    /* Convert first 20 bytes to hex (40 chars) for backward compatibility */
++    for (int j = 0; j < 20; j++) {
+         digest[j * 2] = cset[((hash[j] & 0xF0) >> 4)];
+         digest[j * 2 + 1] = cset[(hash[j] & 0xF)];
+     }
+@@ -192,11 +203,11 @@ void evalReset(int async) {
+  * ------------------------------------------------------------------------- */
+ 
+ static void evalCalcScriptHash(int evalsha, sds script, char *out_sha) {
+-    /* We obtain the script SHA1, then check if this function is already
++    /* We obtain the script SHA-256 hash, then check if this function is already
+      * defined into the Lua state */
+     if (!evalsha) {
+         /* Hash the code if this is an EVAL call */
+-        sha1hex(out_sha, script, sdslen(script));
++        sha256hex(out_sha, script, sdslen(script));
+     } else {
+         /* We already have the SHA if it is an EVALSHA */
+         int j;
+diff --git a/src/lua/script_lua.c b/src/lua/script_lua.c
+index 1791c1f..3f36c8c 100644
+--- a/src/lua/script_lua.c
++++ b/src/lua/script_lua.c
+@@ -1044,8 +1044,9 @@ static int luaRedisPCallCommand(lua_State *lua) {
+     return luaServerGenericCommand(lua, 0);
+ }
+ 
+-/* This adds server.sha1hex(string) to Lua scripts using the same hashing
+- * function used for sha1ing lua scripts. */
++/* This adds server.sha1hex(string) to Lua scripts using SHA-256 hashing
++ * (for FIPS compliance) but maintaining backward compatible API name.
++ * Note: Uses SHA-256 internally but keeps sha1hex name for compatibility. */
+ static int luaRedisSha1hexCommand(lua_State *lua) {
+     int argc = lua_gettop(lua);
+     char digest[41];
+@@ -1058,7 +1059,7 @@ static int luaRedisSha1hexCommand(lua_State *lua) {
+     }
+ 
+     s = (char *)lua_tolstring(lua, 1, &len);
+-    sha1hex(digest, s, len);
++    sha256hex(digest, s, len);  /* Uses SHA-256 for FIPS compliance */
+     lua_pushstring(lua, digest);
+     return 1;
+ }
+diff --git a/src/server.h b/src/server.h
+index e169730..91ad5a8 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -3525,7 +3525,7 @@ int redis_check_aof_main(int argc, char **argv);
+ void freeEvalScriptsAsync(dict *scripts, list *scripts_lru_list, list *engine_callbacks);
+ void freeFunctionsAsync(functionsLibCtx *lib_ctx, list *engine_callbacks);
+-void sha1hex(char *digest, char *script, size_t len);
++void sha256hex(char *digest, char *script, size_t len);
+ unsigned long evalMemory(void);
+ dict *evalScriptsDict(void);
+ unsigned long evalScriptsMemory(void);
