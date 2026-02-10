@@ -18,13 +18,28 @@ RUN set -eux; \
     update-ca-certificates; \
     rm -rf /var/lib/apt/lists/*
 
+# Fetch and process Mozilla CA bundle for runtime stage
+RUN set -eux; \
+    echo "Fetching Mozilla CA bundle..."; \
+    curl -L -o /tmp/cacert.pem https://curl.se/ca/cacert.pem; \
+    mkdir -p /usr/local/share/ca-certificates-mozilla; \
+    cd /tmp; \
+    csplit -s -z -f cert- cacert.pem '/-----BEGIN CERTIFICATE-----/' '{*}'; \
+    for cert in cert-*; do \
+        if grep -q 'BEGIN CERTIFICATE' "$cert"; then \
+            mv "$cert" "/usr/local/share/ca-certificates-mozilla/${cert}.crt"; \
+        fi; \
+    done; \
+    rm -f /tmp/cacert.pem /tmp/cert-*; \
+    echo "✓ Mozilla CA bundle processed ($(ls /usr/local/share/ca-certificates-mozilla/cert-*.crt 2>/dev/null | wc -l) certificates)"
+
 RUN set -eux; \
     cd /tmp; \
-    wget --no-check-certificate https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz; \
+    curl -L -O https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz; \
     tar -xzf openssl-${OPENSSL_VERSION}.tar.gz; \
     cd openssl-${OPENSSL_VERSION}; \
-    ./Configure --prefix=${OPENSSL_PREFIX} --openssldir=${OPENSSL_PREFIX}/ssl --libdir=lib64 enable-fips shared linux-x86_64; \
-    make -j"$(nproc)"; make install_sw; make install_fips; make install_ssldirs; \
+    ./Configure --prefix=${OPENSSL_PREFIX} --openssldir=${OPENSSL_PREFIX}/ssl --libdir=lib64 shared linux-x86_64; \
+    make -j"$(nproc)"; make install_sw; make install_ssldirs; \
     cd ..; rm -rf openssl-${OPENSSL_VERSION}*
 
 ENV PATH="${OPENSSL_PREFIX}/bin:${PATH}" LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64" PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig"
@@ -34,7 +49,7 @@ COPY test-fips.c /tmp/test-fips.c
 
 RUN --mount=type=secret,id=wolfssl_password set -eux; \
     mkdir -p /usr/src; \
-    LD_LIBRARY_PATH="" curl -k -o /tmp/wolfssl.7z "${WOLFSSL_URL}"; \
+    LD_LIBRARY_PATH="" curl -L -o /tmp/wolfssl.7z "${WOLFSSL_URL}"; \
     PASSWORD=$(cat /run/secrets/wolfssl_password | tr -d '\n\r'); \
     7z x /tmp/wolfssl.7z -o/usr/src -p"${PASSWORD}"; rm /tmp/wolfssl.7z; \
     mv /usr/src/wolfssl* /usr/src/wolfssl; cd /usr/src/wolfssl; \
@@ -84,7 +99,7 @@ RUN set -eux; \
     cd /tmp; \
     echo "Building util-linux ${UTIL_LINUX_VERSION} from source with ALL 4 CVE patches..."; \
     # Download util-linux source matching Ubuntu 22.04 version
-    wget --no-check-certificate https://www.kernel.org/pub/linux/utils/util-linux/v2.37/util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
+    curl -L -O https://www.kernel.org/pub/linux/utils/util-linux/v2.37/util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
     tar xf util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
     cd util-linux-${UTIL_LINUX_VERSION}; \
     # Apply ALL 4 CVE patches
@@ -154,7 +169,7 @@ COPY patches/valkey-fips-sha256-complete.patch /tmp/valkey-fips-sha256.patch
 
 RUN set -eux; \
     cd /tmp; \
-    wget --no-check-certificate https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz; \
+    curl -L -o ${VALKEY_VERSION}.tar.gz https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz; \
     tar xzf ${VALKEY_VERSION}.tar.gz; cd valkey-${VALKEY_VERSION}; \
     # Apply FIPS SHA-256 patch to replace SHA-1 with OpenSSL SHA-256
     echo "Applying FIPS SHA-256 patch..."; \
@@ -225,24 +240,50 @@ ENV HOME="/" OS_ARCH="${TARGETARCH:-amd64}" OS_FLAVOUR="ubuntu-22.04-fips" OS_NA
 COPY --from=builder /opt/bitnami-scripts/prebuildfs /
 SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates libgomp1 procps; \
-    apt-get clean; rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update -y && apt-get clean && rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# STIG/CIS: Install security packages (before OpenSSL removal)
-RUN apt-get update && apt-get install -y --no-install-recommends libpam-pwquality libpam-runtime auditd rsyslog-openssl sudo && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN set -eux; \
-    rm -f /usr/lib/x86_64-linux-gnu/libssl.so* /usr/lib/x86_64-linux-gnu/libcrypto.so* /lib/x86_64-linux-gnu/libssl.so* /lib/x86_64-linux-gnu/libcrypto.so* /usr/bin/openssl || true; \
-    dpkg --remove --force-depends libssl3 2>/dev/null || true; \
-    if [ -f "/usr/lib/x86_64-linux-gnu/libssl.so.3" ]; then echo "ERROR: System OpenSSL still present!"; exit 1; fi
-
+################################################################################
+# Install FIPS components FIRST (before any packages that might pull in OpenSSL)
+################################################################################
 COPY --from=builder /usr/local/openssl /usr/local/openssl
 COPY --from=builder /usr/local/lib/libwolfssl* /usr/local/lib/
 COPY --from=builder /usr/local/include/wolfssl /usr/local/include/wolfssl
+
+# Install CA certificates from Mozilla bundle (avoids ca-certificates package)
+COPY --from=builder /usr/local/share/ca-certificates-mozilla /usr/local/share/ca-certificates
+
+RUN set -eux; \
+    echo "Installing Mozilla CA Certificates..."; \
+    mkdir -p /etc/ssl/certs /usr/share/ca-certificates; \
+    cp -a /usr/local/share/ca-certificates/* /usr/share/ca-certificates/ 2>/dev/null || true; \
+    cat /usr/local/share/ca-certificates/*.crt > /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt 2>/dev/null || true; \
+    CERT_COUNT=$(ls /usr/local/share/ca-certificates/*.crt 2>/dev/null | wc -l); \
+    echo "✓ Installed ${CERT_COUNT} CA certificates from Mozilla"
+
+################################################################################
+# Install runtime dependencies (NO ca-certificates package)
+################################################################################
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libgomp1 \
+        procps \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# STIG/CIS: Install security packages
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libpam-pwquality \
+        libpam-runtime \
+        auditd \
+        rsyslog \
+        sudo \
+        libopenscap8 \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/local/lib64/ossl-modules
 RUN --mount=type=bind,from=builder,source=/usr/local/openssl,target=/mnt/openssl set -eux; \

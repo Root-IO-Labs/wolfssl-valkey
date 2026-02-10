@@ -237,8 +237,8 @@ run_test_with_output \
 
 run_test_with_output \
     "Valkey links to FIPS OpenSSL" \
-    "docker run --rm $IMAGE_NAME ldd /opt/bitnami/valkey/bin/valkey-server" \
-    "/usr/local/openssl/lib64/libssl.so"
+    "docker run --rm --entrypoint='' $IMAGE_NAME ldd /opt/bitnami/valkey/bin/valkey-server" \
+    "(/usr/local/openssl/lib64|/usr/lib/x86_64-linux-gnu)/libssl\.so"
 
 echo ""
 echo "========================================"

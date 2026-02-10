@@ -11,7 +11,7 @@
 #
 # Requirements:
 #   - Docker with BuildKit support
-#   - .password file with wolfSSL commercial archive password
+#   - wolfssl_password.txt file with wolfSSL commercial archive password
 #   - Internet connection for downloading sources
 #
 # Usage:
@@ -84,7 +84,7 @@ fi
 # Check for password file
 if [ ! -f "$PASSWORD_FILE" ]; then
     echo -e "${RED}[ERROR]${NC} Password file not found: $PASSWORD_FILE"
-    echo "Please create a .password file with the wolfSSL commercial archive password"
+    echo "Please create a $PASSWORD_FILE file with the wolfSSL commercial archive password"
     exit 1
 fi
 
@@ -97,10 +97,12 @@ echo -e "${GREEN}[OK]${NC} Docker found: $(docker --version)"
 
 # Check Docker BuildKit support
 if ! docker buildx version >/dev/null 2>&1; then
-    echo -e "${YELLOW}[WARN]${NC} Docker BuildKit not available, using legacy builder"
-else
-    echo -e "${GREEN}[OK]${NC} Docker BuildKit available"
+    echo -e "${RED}[ERROR]${NC} Docker BuildKit is not available"
+    echo "This build requires BuildKit for secure secret handling (--secret flag)"
+    echo "Please install/enable Docker BuildKit or use Docker 18.09+"
+    exit 1
 fi
+echo -e "${GREEN}[OK]${NC} Docker BuildKit available"
 
 
 
@@ -199,11 +201,11 @@ echo "6. Test TLS (if configured):"
 echo "   docker exec -it valkey-fips valkey-cli --tls ..."
 echo ""
 
-# # Option to run tests
-# read -p "Run test suite now? [y/N] " -n 1 -r
-# echo
-# if [[ $REPLY =~ ^[Yy]$ ]]; then
-#     echo ""
-#     echo -e "${BLUE}[TEST]${NC} Running test suite..."
-#     ./test-valkey-fips.sh
-# fi
+# Option to run tests
+read -p "Run test suite now? [y/N] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo ""
+    echo -e "${BLUE}[TEST]${NC} Running test suite..."
+    ./test-valkey-fips.sh
+fi

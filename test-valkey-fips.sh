@@ -17,7 +17,7 @@
 set -e
 
 CONTAINER_NAME="${1:-valkey-fips-test}"
-IMAGE_NAME="valkey-fips:8.1.5-ubuntu-24.04"
+IMAGE_NAME="valkey-fips:8.1.5-ubuntu-22.04"
 VALKEY_PORT=6379
 VALKEY_TLS_PORT=6380
 
@@ -59,9 +59,12 @@ if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
 else
     print_error "Image not found: $IMAGE_NAME"
     echo "Please build the image first:"
-    echo "  docker build --secret id=wolfssl_password,src=.password \\"
+    echo "  ./build.sh"
+    echo ""
+    echo "Or manually:"
+    echo "  docker build --secret id=wolfssl_password,src=wolfssl_password.txt \\"
     echo "    -t $IMAGE_NAME \\"
-    echo "    -f valkey/8.1.5-ubuntu-24.04-fips/Dockerfile ."
+    echo "    -f Dockerfile ."
     exit 1
 fi
 

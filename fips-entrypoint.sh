@@ -228,15 +228,17 @@ for lib_path in "${FIPS_SSL_PATHS[@]}"; do
         # Verify this is the FIPS OpenSSL by comparing with /usr/local/openssl/lib64/
         fips_lib="/usr/local/openssl/lib64/$(basename "$lib_path")"
         if [ -f "$fips_lib" ]; then
-            # Compare file sizes (should be identical if it's a copy of the FIPS lib)
-            system_size=$(stat -c%s "$lib_path" 2>/dev/null || echo "0")
-            fips_size=$(stat -c%s "$fips_lib" 2>/dev/null || echo "0")
+            # Compare SHA256 hashes (cryptographically secure verification)
+            system_hash=$(sha256sum "$lib_path" 2>/dev/null | awk '{print $1}')
+            fips_hash=$(sha256sum "$fips_lib" 2>/dev/null | awk '{print $1}')
 
-            if [ "$system_size" = "$fips_size" ] && [ "$system_size" != "0" ]; then
-                echo "      ✓ FIPS OpenSSL library verified: $lib_path (matches $fips_lib)"
+            if [ "$system_hash" = "$fips_hash" ] && [ -n "$system_hash" ]; then
+                echo "      ✓ FIPS OpenSSL library verified: $lib_path"
+                echo "         SHA256: $system_hash"
             else
                 echo "      ✗ ERROR: Library at $lib_path does not match FIPS OpenSSL"
-                echo "         System lib size: $system_size, FIPS lib size: $fips_size"
+                echo "         System SHA256: $system_hash"
+                echo "         FIPS SHA256:   $fips_hash"
                 NON_FIPS_LIBS_FOUND=1
             fi
         else

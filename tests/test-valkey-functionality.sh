@@ -74,7 +74,7 @@ run_test() {
 
 # Helper function to execute Valkey commands
 vcli() {
-    docker exec "$CONTAINER_NAME" valkey-cli "$@" 2>/dev/null
+    docker exec "$CONTAINER_NAME" valkey-cli "$@"
 }
 
 # Test 1: String operations
@@ -377,22 +377,42 @@ test_pubsub() {
     run_test "Test pub/sub functionality"
 
     # Start subscriber in background
-    timeout 3 docker exec "$CONTAINER_NAME" valkey-cli SUBSCRIBE test_channel > /tmp/pubsub_output_$$ 2>&1 &
+    PUBSUB_OUTPUT="/tmp/pubsub_output_$$"
+    timeout 5 docker exec "$CONTAINER_NAME" valkey-cli SUBSCRIBE test_channel > "$PUBSUB_OUTPUT" 2>&1 &
     SUB_PID=$!
-    sleep 1
+
+    # Wait for subscriber to be ready
+    sleep 2
 
     # Publish message
-    vcli PUBLISH test_channel "Hello PubSub" >/dev/null
-    sleep 1
+    RESULT=$(vcli PUBLISH test_channel "Hello PubSub" 2>&1)
+    if [ "$RESULT" != "1" ]; then
+        kill $SUB_PID 2>/dev/null || true
+        wait $SUB_PID 2>/dev/null || true
+        rm -f "$PUBSUB_OUTPUT"
+        print_fail "PUBLISH failed: expected '1' subscriber, got '$RESULT'"
+        return 1
+    fi
+
+    # Wait for message to be received
+    sleep 2
+
+    # Stop subscriber
+    kill $SUB_PID 2>/dev/null || true
+    wait $SUB_PID 2>/dev/null || true
 
     # Check if message was received
-    if grep -q "Hello PubSub" /tmp/pubsub_output_$$ 2>/dev/null; then
-        rm -f /tmp/pubsub_output_$$
+    if grep -q "Hello PubSub" "$PUBSUB_OUTPUT" 2>/dev/null; then
+        rm -f "$PUBSUB_OUTPUT"
         print_pass "Pub/Sub: SUBSCRIBE, PUBLISH"
         return 0
     else
-        rm -f /tmp/pubsub_output_$$
         print_fail "Pub/Sub message not received"
+        if [ -f "$PUBSUB_OUTPUT" ]; then
+            echo "Subscriber output:"
+            cat "$PUBSUB_OUTPUT" | head -10
+        fi
+        rm -f "$PUBSUB_OUTPUT"
         return 1
     fi
 }
@@ -561,23 +581,71 @@ test_info_command() {
 setup_test_environment() {
     print_header "Setting Up Test Environment"
 
+    # Check if image exists
+    print_info "Checking if image exists: $IMAGE_NAME"
+    if ! docker images "$IMAGE_NAME" --format "{{.Repository}}:{{.Tag}}" | grep -q "$IMAGE_NAME"; then
+        echo -e "${RED}Error: Image not found: $IMAGE_NAME${NC}"
+        echo "Please build the image first:"
+        echo "  cd /path/to/valkey/8.1.5-ubuntu-22.04"
+        echo "  ./build.sh"
+        exit 1
+    fi
+    print_info "✓ Image found"
+
     # Remove any existing container
     docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
     sleep 1
 
+    # Check if port is already in use (if lsof is available)
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof -Pi :$VALKEY_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+            echo -e "${RED}Error: Port $VALKEY_PORT is already in use${NC}"
+            echo "Please stop the service using port $VALKEY_PORT or choose a different port"
+            echo ""
+            lsof -Pi :$VALKEY_PORT -sTCP:LISTEN 2>/dev/null || true
+            exit 1
+        fi
+    fi
+
     # Start container
     print_info "Starting Valkey container..."
-    if ! docker run --name "$CONTAINER_NAME" -d \
+    ERROR_OUTPUT=$(docker run --name "$CONTAINER_NAME" -d \
         -p $VALKEY_PORT:6379 \
         -e ALLOW_EMPTY_PASSWORD=yes \
-        "$IMAGE_NAME" >/dev/null 2>&1; then
+        "$IMAGE_NAME" 2>&1)
+
+    if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to start container${NC}"
+        echo "Docker error output:"
+        echo "$ERROR_OUTPUT"
+        exit 1
+    fi
+    print_info "✓ Container started (ID: $(echo $ERROR_OUTPUT | cut -c1-12))"
+
+    # Wait for container to be ready (FIPS validation takes time)
+    print_info "Waiting for FIPS validation and Valkey initialization..."
+    print_info "This may take 20-30 seconds due to FIPS startup checks..."
+
+    # Wait for FIPS validation to complete
+    MAX_WAIT=60
+    ELAPSED=0
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        if docker logs "$CONTAINER_NAME" 2>&1 | grep -q "✓ ALL FIPS CHECKS PASSED"; then
+            print_info "✓ FIPS validation completed"
+            break
+        fi
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        echo -e "${RED}FIPS validation timeout${NC}"
+        docker logs "$CONTAINER_NAME" 2>&1 | tail -30
         exit 1
     fi
 
-    # Wait for container to be ready
-    print_info "Waiting for Valkey to initialize..."
-    sleep 8
+    # Wait a bit more for Valkey to fully start
+    sleep 5
 
     # Verify container is running
     if ! docker ps | grep -q "$CONTAINER_NAME"; then
@@ -586,9 +654,21 @@ setup_test_environment() {
         exit 1
     fi
 
-    # Test connectivity
-    if ! vcli PING >/dev/null 2>&1; then
+    # Test connectivity with retries
+    print_info "Testing Valkey connectivity..."
+    RETRIES=10
+    while [ $RETRIES -gt 0 ]; do
+        if vcli PING >/dev/null 2>&1; then
+            print_info "✓ Valkey is responding"
+            break
+        fi
+        sleep 1
+        RETRIES=$((RETRIES - 1))
+    done
+
+    if [ $RETRIES -eq 0 ]; then
         echo -e "${RED}Cannot connect to Valkey${NC}"
+        docker logs "$CONTAINER_NAME" 2>&1 | tail -30
         exit 1
     fi
 

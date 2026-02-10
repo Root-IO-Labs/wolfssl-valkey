@@ -78,14 +78,14 @@ Stage 3: Runtime (ubuntu:22.04)
 | **wolfProvider** | v1.1.0 | https://github.com/wolfSSL/wolfProvider | ✅ Git tag verification |
 | **Valkey** | 8.1.5 | https://download.valkey.io/releases/ | 🔐 HTTPS encryption (see note) |
 
-**🔐 Security Note:** Ubuntu 22.04 CA bundle (released 2024) lacks several 2025 certificate authorities. wolfSSL uses password authentication (strong mitigation). Valkey and wolfSSL downloads use HTTPS encryption with certificate verification bypassed. OpenSSL download uses full certificate verification.
+**🔐 Security Note:** We fetch the Mozilla CA bundle directly from https://curl.se/ca/cacert.pem to ensure up-to-date certificate authorities. All downloads use proper certificate verification with `curl -L`.
 
 ### 3.2 Build Dependencies (Stage 1)
 
 ```
 build-essential       - GCC, make, etc.
-ca-certificates       - SSL CA bundle
-curl, wget            - Download utilities
+ca-certificates       - SSL CA bundle (builder stage only)
+curl                  - Download utility with proper cert verification
 git                   - Version control (for wolfProvider)
 autoconf, automake    - Build configuration
 libtool, pkg-config   - Library management
@@ -108,10 +108,11 @@ zlib1g-dev            - Compression
 
 ### 3.4 Runtime Dependencies (Stage 3)
 
-**NOTE:** System OpenSSL (`libssl3t64`) is **intentionally excluded** to enforce FIPS-only crypto.
+**NOTE:** System OpenSSL (`libssl3t64`) and `ca-certificates` package are **intentionally excluded** to prevent pulling in Ubuntu's OpenSSL. CA certificates are copied from Mozilla bundle fetched in builder stage.
 
 ```
-ca-certificates       - SSL CA bundle
+libgomp1              - OpenMP runtime (for parallel processing)
+procps                - Process utilities
 libbsd0               - BSD functions
 libedit2              - Command-line editing
 libicu74              - Unicode (Ubuntu 22.04 version)
@@ -201,21 +202,22 @@ cd openssl-${OPENSSL_VERSION}
     --prefix=${OPENSSL_PREFIX} \
     --openssldir=${OPENSSL_PREFIX}/ssl \
     --libdir=lib64 \
-    enable-fips \
     shared \
     linux-x86_64
 
 make -j$(nproc)
 make install_sw
-make install_fips
 make install_ssldirs
 ```
 
 **Key Points:**
-- `enable-fips`: Enables FIPS module support (not the OpenSSL FIPS module itself)
+- **NO `enable-fips` flag**: We do NOT use OpenSSL's FIPS module
+- OpenSSL 3 provides the API framework only
+- All crypto operations delegated to **wolfSSL FIPS v5** via **wolfProvider**
 - `--libdir=lib64`: 64-bit library directory
-- `install_fips`: Installs FIPS-related headers and configs
 - Installed to: `/usr/local/openssl`
+
+**Architecture Note:** This is the correct configuration for using wolfSSL FIPS with OpenSSL-based applications. OpenSSL's FIPS module is not needed because wolfProvider loads wolfSSL FIPS as the crypto provider.
 
 #### Step 1.2: wolfSSL FIPS v5.2.3
 
@@ -743,30 +745,33 @@ ERROR: wolfprov provider not available
 
 - ✅ Use BuildKit secrets for passwords (not ENV vars)
 - ✅ Multi-stage build reduces attack surface
+- ✅ All downloads use full TLS certificate verification (`curl -L`)
 - ✅ OpenSSL: Full TLS certificate verification
-- 🔐 wolfSSL: HTTPS + password authentication (cert bypassed - see Section 10.1)
-- 🔐 Valkey: HTTPS encryption (cert bypassed - see Section 10.1)
+- ✅ wolfSSL: HTTPS + password authentication + cert verification
+- ✅ Valkey: Full TLS certificate verification
 - ✅ Remove build tools from runtime image
-- ✅ CA certificates updated to latest 2024 bundle
-- ⚠️ Ubuntu 22.04 CA bundle lacks 2025 certificate authorities
+- ✅ CA certificates from Mozilla trusted root store
+- ✅ Runtime avoids ca-certificates package (prevents Ubuntu OpenSSL installation)
 
 ### 12.2 Supply Chain Security
 
 **Current State:**
-- 🔐 wolfSSL: HTTPS encryption + password authentication (cert verification bypassed)
-- ✅ OpenSSL: Downloaded via HTTPS with full certificate verification
-- 🔐 Valkey: HTTPS encryption (cert verification bypassed, GPG available but not verified)
+- ✅ All downloads use full TLS certificate verification
+- ✅ OpenSSL: HTTPS with certificate verification
+- ✅ wolfSSL: HTTPS + password authentication + certificate verification
+- ✅ Valkey: HTTPS with certificate verification
 - ✅ wolfProvider: Git repository with tag verification
-- ✅ CA certificates: Updated to latest version (2024 bundle)
+- ✅ CA certificates: Mozilla trusted root store (always up-to-date)
 
 **Security Analysis:**
 
 | Component | Transport Security | Authentication | Integrity Check | Risk Level |
 |-----------|-------------------|----------------|-----------------|------------|
 | OpenSSL | HTTPS + Cert Verification | Server certificate | TLS cert chain | ✅ Low |
-| wolfSSL | HTTPS (cert bypass) | Password (strong secret) | Password verification | 🔐 Low |
-| Valkey | HTTPS (cert bypass) | None (public) | GPG available (unused) | 🔐 Low-Medium |
+| wolfSSL | HTTPS + Cert Verification | Password (strong secret) | TLS + Password | ✅ Low |
+| Valkey | HTTPS + Cert Verification | None (public) | TLS cert chain | ✅ Low |
 | wolfProvider | Git over HTTPS | Tag verification | Git commit | ✅ Low |
+| CA Bundle | HTTPS + Cert Verification | curl.se/Mozilla | TLS cert chain | ✅ Low |
 
 **Download Security Details:**
 
