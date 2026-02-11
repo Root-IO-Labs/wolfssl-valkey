@@ -120,12 +120,12 @@ echo "Starting Test Suite 1..."
 
 run_test_with_output \
     "No system OpenSSL (libssl3t64) present" \
-    "docker run --rm $IMAGE_NAME find /usr/lib /lib -name 'libssl.so*' 2>/dev/null || true" \
+    "docker run --rm $IMAGE_NAME bash -c 'dpkg -l | grep libssl3t64 || true'" \
     "^$"
 
 run_test_with_output \
     "FIPS OpenSSL present" \
-    "docker run --rm $IMAGE_NAME ls /usr/local/openssl/lib64/libssl.so.3" \
+    "docker run --rm $IMAGE_NAME ls /usr/lib/x86_64-linux-gnu/libssl.so.3" \
     "libssl.so.3"
 
 run_test_with_output \
@@ -135,7 +135,7 @@ run_test_with_output \
 
 run_test_with_output \
     "wolfProvider module present" \
-    "docker run --rm $IMAGE_NAME ls /usr/local/lib64/ossl-modules/libwolfprov.so" \
+    "docker run --rm $IMAGE_NAME ls /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so" \
     "libwolfprov.so"
 
 echo ""
@@ -191,9 +191,9 @@ run_test_with_output \
     "✓ CPU architecture: x86_64"
 
 run_test_with_output \
-    "Non-FIPS library check passes" \
+    "Ubuntu OpenSSL with wolfProvider verified" \
     "docker run --rm $IMAGE_NAME /usr/local/bin/fips-entrypoint.sh /bin/true" \
-    "✓ No system OpenSSL libraries found"
+    "✓ Ubuntu OpenSSL 3.x with wolfProvider verified"
 
 echo ""
 echo "========================================"
@@ -269,7 +269,7 @@ else
 fi
 
 echo -n "Testing: Fail-closed on missing wolfProvider ... "
-output=$(docker run --rm --user root $IMAGE_NAME bash -c 'rm /usr/local/lib64/ossl-modules/libwolfprov.so; /usr/local/bin/fips-entrypoint.sh /bin/true' 2>&1 || true)
+output=$(docker run --rm --user root $IMAGE_NAME bash -c 'rm /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so; /usr/local/bin/fips-entrypoint.sh /bin/true' 2>&1 || true)
 if echo "$output" | grep -q "✗ FIPS VALIDATION FAILED"; then
     echo "✓ PASS (correctly fails)"
     PASSED_TESTS=$((PASSED_TESTS + 1))

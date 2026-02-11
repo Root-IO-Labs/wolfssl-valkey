@@ -22,8 +22,8 @@ wolfprov = wolfprov_sect
 # default = default_sect
 
 [wolfprov_sect]
-# Path to wolfProvider shared library
-module = /usr/local/lib64/ossl-modules/libwolfprov.so
+# Path to wolfProvider shared library (Ubuntu system location)
+module = /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so
 activate = 1
 
 [default_sect]

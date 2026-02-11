@@ -51,6 +51,7 @@ RUN set -eux; \
         pkg-config \
         p7zip-full \
         perl \
+        libssl-dev \
     ; \
     update-ca-certificates; \
     rm -rf /var/lib/apt/lists/*
@@ -74,36 +75,12 @@ RUN set -eux; \
     echo "✓ Mozilla CA bundle processed ($(ls /usr/local/share/ca-certificates-mozilla/cert-*.crt 2>/dev/null | wc -l) certificates)"
 
 ################################################################################
-# Build OpenSSL 3.0.x with FIPS module support
+# Use Ubuntu's OpenSSL 3 package (no need to build from source)
+# We'll configure it with wolfProvider in the runtime stage
 ################################################################################
-RUN set -eux; \
-    cd /tmp; \
-    curl -L -O https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz; \
-    tar -xzf openssl-${OPENSSL_VERSION}.tar.gz; \
-    cd openssl-${OPENSSL_VERSION}; \
-    ./Configure \
-        --prefix=${OPENSSL_PREFIX} \
-        --openssldir=${OPENSSL_PREFIX}/ssl \
-        --libdir=lib64 \
-        shared \
-        linux-x86_64 \
-    ; \
-    make -j"$(nproc)"; \
-    make install_sw; \
-    make install_ssldirs; \
-    cd ..; \
-    rm -rf openssl-${OPENSSL_VERSION}*; \
-    echo "OpenSSL ${OPENSSL_VERSION} installed successfully"
-
-# Update environment for subsequent builds
-ENV PATH="${OPENSSL_PREFIX}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64"
-ENV PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig"
-
-# Verify OpenSSL installation
-RUN openssl version && \
-    openssl list -providers && \
-    ls -la ${OPENSSL_PREFIX}/lib64/ossl-modules/
+# Note: OpenSSL 3 is already installed as dependency of ca-certificates
+# Ubuntu 22.04 provides libssl3 (OpenSSL 3.0.x) which supports providers
+# We only need to build wolfSSL FIPS v5 and wolfProvider
 
 ################################################################################
 # Build wolfSSL FIPS v5
@@ -180,60 +157,35 @@ RUN set -eux; \
     git clone --depth 1 --branch ${WOLFPROV_VERSION} ${WOLFPROV_REPO} wolfProvider; \
     cd wolfProvider; \
     ./autogen.sh; \
-    # Configure wolfProvider to use our OpenSSL and wolfSSL
+    # Configure wolfProvider to use Ubuntu's system OpenSSL and our wolfSSL
+    # Ubuntu's OpenSSL 3 is at /usr (system paths)
     ./configure \
         --prefix=${WOLFPROV_PREFIX} \
-        --with-openssl=${OPENSSL_PREFIX} \
+        --with-openssl=/usr \
         --with-wolfssl=${WOLFSSL_PREFIX} \
     ; \
     make -j"$(nproc)"; \
-    echo "wolfProvider built, checking build artifacts..."; \
-    find . -name "*.so" -type f; \
-    echo "Installing wolfProvider..."; \
-    make install; \
-    echo "Checking installation results..."; \
-    find /usr/local -name "*wolfprov*" -type f 2>/dev/null || true; \
-    find ${OPENSSL_PREFIX} -name "*wolfprov*" -type f 2>/dev/null || true; \
-    # Manual installation if make install didn't work
-    if [ ! -f "${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so" ]; then \
-        echo "Manual installation required..."; \
-        mkdir -p ${OPENSSL_PREFIX}/lib64/ossl-modules; \
-        if [ -f ".libs/libwolfprov.so" ]; then \
-            cp -v .libs/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/ || true; \
-        fi; \
-        if [ -f "src/.libs/libwolfprov.so" ]; then \
-            cp -v src/.libs/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/ || true; \
-        fi; \
+    echo "wolfProvider built, installing to /usr/lib/x86_64-linux-gnu/ossl-modules/..."; \
+    # Install wolfProvider module to Ubuntu's OpenSSL module directory
+    mkdir -p /usr/lib/x86_64-linux-gnu/ossl-modules; \
+    if [ -f ".libs/libwolfprov.so" ]; then \
+        cp -v .libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    elif [ -f "src/.libs/libwolfprov.so" ]; then \
+        cp -v src/.libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
     fi; \
     cd ..; \
     rm -rf wolfProvider; \
-    echo "wolfProvider installation completed"
+    echo "✓ wolfProvider installed to /usr/lib/x86_64-linux-gnu/ossl-modules/"
 
 # Verify wolfProvider installation
 RUN set -eux; \
-    echo "Checking for wolfProvider in possible locations..."; \
-    if [ -d "${OPENSSL_PREFIX}/lib64/ossl-modules" ]; then \
-        ls -la ${OPENSSL_PREFIX}/lib64/ossl-modules/; \
-    fi; \
-    if [ -d "${OPENSSL_PREFIX}/lib/ossl-modules" ]; then \
-        ls -la ${OPENSSL_PREFIX}/lib/ossl-modules/; \
-    fi; \
-    if [ -d "${WOLFPROV_PREFIX}/lib64/ossl-modules" ]; then \
-        ls -la ${WOLFPROV_PREFIX}/lib64/ossl-modules/; \
-    fi; \
-    if [ -d "${WOLFPROV_PREFIX}/lib/ossl-modules" ]; then \
-        ls -la ${WOLFPROV_PREFIX}/lib/ossl-modules/; \
-    fi; \
-    # Check if libwolfprov.so exists in any of the expected locations
-    if [ -f "${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so" ] || \
-       [ -f "${OPENSSL_PREFIX}/lib/ossl-modules/libwolfprov.so" ] || \
-       [ -f "${WOLFPROV_PREFIX}/lib64/ossl-modules/libwolfprov.so" ] || \
-       [ -f "${WOLFPROV_PREFIX}/lib/ossl-modules/libwolfprov.so" ]; then \
-        echo "wolfProvider module found and verified"; \
-    else \
-        echo "ERROR: wolfProvider module not found in expected locations"; \
+    echo "Verifying wolfProvider in Ubuntu OpenSSL modules directory..."; \
+    ls -la /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    if [ ! -f "/usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so" ]; then \
+        echo "ERROR: wolfProvider module not found at /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so"; \
         exit 1; \
-    fi
+    fi; \
+    echo "✓ wolfProvider module verified"
 
 ################################################################################
 # Build Valkey from source with custom OpenSSL
@@ -256,8 +208,26 @@ RUN set -eux; \
     echo "  - Replaced SHA-1 with OpenSSL SHA-256 in eval.c (Lua script hashing)"; \
     echo "  - Replaced SHA-1 with OpenSSL SHA-256 in debug.c (DEBUG DIGEST)"; \
     echo "  - Updated function declaration in server.h (sha1hex -> sha256hex)"; \
-    # Build Valkey with TLS using our custom OpenSSL
-    make BUILD_TLS=yes USE_SYSTEMD=no OPENSSL_PREFIX=${OPENSSL_PREFIX} -j"$(nproc)"; \
+    # Build Valkey with TLS using Ubuntu's system OpenSSL
+    # Set environment variables for SSL library location
+    export OPENSSL_PREFIX=/usr; \
+    export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}; \
+    # First, clean and build all dependencies with SSL support
+    make distclean; \
+    cd deps; \
+    make distclean || true; \
+    # Build hiredis with explicit SSL support using system OpenSSL
+    cd hiredis; \
+    make USE_SSL=1 \
+        SSL_CFLAGS="-I/usr/include" \
+        SSL_LDFLAGS="-L/usr/lib/x86_64-linux-gnu" \
+        SSL_LIBS="-lssl -lcrypto" \
+        static; \
+    cd ../..; \
+    # Now build Valkey with TLS, it will use the hiredis we just built
+    make BUILD_TLS=yes USE_SYSTEMD=no \
+        OPENSSL_PREFIX=/usr \
+        -j"$(nproc)"; \
     # Install to /opt/bitnami/valkey for Bitnami compatibility
     make install PREFIX=/opt/bitnami/valkey; \
     mkdir -p /opt/bitnami/valkey/etc; \
@@ -318,64 +288,48 @@ COPY --from=builder /opt/bitnami-scripts/prebuildfs /
 SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 
 ################################################################################
-# CRITICAL FIPS STEP 1: Install FIPS OpenSSL to System Locations FIRST
-# This must happen BEFORE any apt-get install commands to ensure all
-# packages link to FIPS-validated OpenSSL instead of Ubuntu's system OpenSSL
+# Install Ubuntu's OpenSSL 3 with wolfProvider
+# Much simpler than building OpenSSL - we just add wolfProvider to system OpenSSL
 ################################################################################
 
-# Copy FIPS components from builder (before installing ANY packages)
-COPY --from=builder /usr/local/openssl /usr/local/openssl
+# Copy FIPS components from builder
 COPY --from=builder /usr/local/lib/libwolfssl.so* /usr/local/lib/
 COPY --from=builder /usr/local/include/wolfssl /usr/local/include/wolfssl
-COPY --from=builder /usr/local/openssl/lib64/ossl-modules/libwolfprov.so* /tmp/wolfprov/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/
 
-# Install FIPS OpenSSL as system OpenSSL
+# Install Ubuntu's OpenSSL 3 package and configure environment
 RUN set -eux; \
     echo "========================================"; \
-    echo "Installing FIPS OpenSSL as System OpenSSL"; \
+    echo "Installing Ubuntu OpenSSL 3 + wolfProvider"; \
     echo "========================================"; \
     \
-    # Create necessary directories
-    mkdir -p /usr/lib/x86_64-linux-gnu; \
-    mkdir -p /usr/local/lib64/ossl-modules; \
+    # Install libssl3 package (OpenSSL 3.0.x)
+    apt-get update; \
+    apt-get install -y --no-install-recommends libssl3 openssl; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
     \
-    # Install FIPS OpenSSL libraries to system locations
-    # This makes them the default OpenSSL that apt packages will link to
-    cp -av /usr/local/openssl/lib64/libssl.so* /usr/lib/x86_64-linux-gnu/; \
-    cp -av /usr/local/openssl/lib64/libcrypto.so* /usr/lib/x86_64-linux-gnu/; \
-    \
-    # Install wolfSSL to system locations
-    cp -av /usr/local/lib/libwolfssl.so* /usr/lib/x86_64-linux-gnu/; \
-    \
-    # Install wolfProvider module
-    cp -av /tmp/wolfprov/* /usr/local/lib64/ossl-modules/; \
-    rm -rf /tmp/wolfprov; \
-    \
-    # Install OpenSSL binary to system PATH
-    cp -av /usr/local/openssl/bin/openssl /usr/bin/openssl; \
-    \
-    # Configure dynamic linker to find FIPS libraries
-    echo "/usr/lib/x86_64-linux-gnu" > /etc/ld.so.conf.d/fips-openssl.conf; \
-    echo "/usr/local/openssl/lib64" >> /etc/ld.so.conf.d/fips-openssl.conf; \
-    echo "/usr/local/lib" >> /etc/ld.so.conf.d/fips-openssl.conf; \
+    # Configure dynamic linker to find wolfSSL
+    echo "/usr/local/lib" > /etc/ld.so.conf.d/fips-wolfssl.conf; \
     ldconfig; \
     \
-    echo "✓ FIPS OpenSSL installed to system locations"; \
-    echo "✓ All future apt packages will use FIPS OpenSSL"
+    echo "✓ Ubuntu OpenSSL 3 installed"; \
+    echo "✓ wolfSSL FIPS v5 installed"; \
+    echo "✓ wolfProvider module ready"
 
 # Set OpenSSL environment variables for wolfProvider
-ENV OPENSSL_CONF="/usr/local/openssl/ssl/openssl.cnf" \
-    OPENSSL_MODULES="/usr/local/lib64/ossl-modules" \
-    LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/local/openssl/lib64:/usr/local/lib" \
-    PATH="/usr/bin:/usr/local/openssl/bin:/opt/bitnami/common/bin:/opt/bitnami/valkey/bin:${PATH}"
+ENV OPENSSL_CONF="/etc/ssl/openssl-wolfprov.cnf" \
+    OPENSSL_MODULES="/usr/lib/x86_64-linux-gnu/ossl-modules" \
+    LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu" \
+    PATH="/usr/bin:/opt/bitnami/common/bin:/opt/bitnami/valkey/bin:${PATH}"
 
 # Copy OpenSSL configuration with wolfProvider
-COPY openssl-wolfprov.cnf /usr/local/openssl/ssl/openssl.cnf
+COPY openssl-wolfprov.cnf /etc/ssl/openssl-wolfprov.cnf
 
-# Verify FIPS OpenSSL works BEFORE installing any packages
+# Verify wolfProvider works with Ubuntu's OpenSSL
 RUN set -eux; \
     echo "========================================"; \
-    echo "Verifying FIPS OpenSSL Installation"; \
+    echo "Verifying wolfProvider with Ubuntu OpenSSL"; \
     echo "========================================"; \
     openssl version; \
     echo ""; \
@@ -386,8 +340,8 @@ RUN set -eux; \
         echo "ERROR: wolfProvider not loaded!"; \
         exit 1; \
     fi; \
-    echo "✓ FIPS OpenSSL operational"; \
-    echo "✓ wolfProvider loaded"; \
+    echo "✓ Ubuntu OpenSSL 3 operational"; \
+    echo "✓ wolfProvider loaded successfully"; \
     echo "========================================"
 
 ################################################################################
