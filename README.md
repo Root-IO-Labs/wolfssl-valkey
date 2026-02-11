@@ -122,14 +122,17 @@ Valkey Server Start
 | File | Description |
 |------|-------------|
 | `Dockerfile` | Multi-stage build for FIPS Valkey |
+| `Dockerfile.hardened` | FIPS + STIG/CIS hardened variant |
 | `openssl-wolfprov.cnf` | OpenSSL configuration to load wolfProvider |
 | `fips-startup-check.c` | C program for FIPS validation at startup |
 | `fips-entrypoint.sh` | Entrypoint wrapper for FIPS validation |
 | `test-fips.c` | wolfSSL FIPS test for builder stage |
-| `build.sh` | Build script with pre-checks and verification |
+| `build.sh` | Build script for FIPS Valkey with pre-checks and verification |
+| `build-hardened.sh` | Build script for FIPS + STIG/CIS hardened variant |
 | `test-valkey-fips.sh` | Comprehensive test suite |
 | `prebuildfs/` | Bitnami helper scripts (copied from original) |
 | `rootfs/` | Valkey-specific scripts (copied from original) |
+| `hardening/` | STIG/CIS hardening scripts |
 | `README.md` | This file |
 
 ## Prerequisites
@@ -171,7 +174,7 @@ The build script will:
 ```bash
 cd /path/to/node-fips
 
-# Build with cache
+# Build standard FIPS image with cache
 docker build \
   --secret id=wolfssl_password,src=wolfssl_password.txt \
   -t valkey-fips:8.1.5-ubuntu-22.04 \
@@ -185,7 +188,31 @@ docker build \
   .
 ```
 
-**Build Time**: Approximately 15-20 minutes (depending on system)
+### Option 3: STIG/CIS Hardened Build
+
+For environments requiring STIG/CIS security compliance in addition to FIPS:
+
+```bash
+# Using the hardened build script
+./build-hardened.sh
+
+# Or manual build with Dockerfile.hardened
+docker build \
+  --secret id=wolfssl_password,src=wolfssl_password.txt \
+  -f Dockerfile.hardened \
+  -t valkey-fips-hardened:8.1.5-ubuntu-22.04 \
+  .
+```
+
+The hardened variant includes:
+- All FIPS 140-3 compliance features from the standard build
+- Ubuntu 22.04 STIG security hardening
+- CIS Benchmark compliance measures
+- Additional security controls and reduced attack surface
+
+**Build Time**:
+- Standard FIPS build: Approximately 15-20 minutes
+- Hardened build: Approximately 20-25 minutes (depending on system)
 
 ## Testing
 
