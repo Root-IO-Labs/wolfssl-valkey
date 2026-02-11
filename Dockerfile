@@ -109,7 +109,6 @@ RUN --mount=type=secret,id=wolfssl_password \
         --enable-cmac \
         --enable-keygen \
         --enable-sha \
-        --enable-des3 \
         --enable-aesctr \
         --enable-aesccm \
         --enable-x963kdf \
@@ -119,7 +118,7 @@ RUN --mount=type=secret,id=wolfssl_password \
         --enable-enckeys \
         --enable-base16 \
         --with-eccminsz=192 \
-        CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=1024" \
+        CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=2048" \
     ; \
     make -j"$(nproc)"; \
     ./fips-hash.sh; \

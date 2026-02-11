@@ -55,7 +55,7 @@ RUN --mount=type=secret,id=wolfssl_password set -eux; \
     7z x /tmp/wolfssl.7z -o/usr/src -p"${PASSWORD}"; rm /tmp/wolfssl.7z; \
     mv /usr/src/wolfssl* /usr/src/wolfssl; cd /usr/src/wolfssl; \
     sed -i '/^#ifdef WOLFSSL_PYTHON/,/^#endif/d' wolfssl/wolfcrypt/settings.h || true; \
-    ./configure --prefix=${WOLFSSL_PREFIX} --enable-fips=v5 --enable-opensslcoexist --enable-cmac --enable-keygen --enable-sha --enable-des3 --enable-aesctr --enable-aesccm --enable-x963kdf --enable-compkey --enable-certgen --enable-aeskeywrap --enable-enckeys --enable-base16 --with-eccminsz=192 CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=1024"; \
+    ./configure --prefix=${WOLFSSL_PREFIX} --enable-fips=v5 --enable-opensslcoexist --enable-cmac --enable-keygen --enable-sha --enable-aesctr --enable-aesccm --enable-x963kdf --enable-compkey --enable-certgen --enable-aeskeywrap --enable-enckeys --enable-base16 --with-eccminsz=192 CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=2048"; \
     make -j"$(nproc)"; ./fips-hash.sh; make -j"$(nproc)"; make install; ldconfig; \
     cd /; rm -rf /usr/src/wolfssl
 
