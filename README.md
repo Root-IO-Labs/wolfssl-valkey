@@ -159,8 +159,7 @@ echo "your_password_here" > wolfssl_password.txt
 ### Option 1: Using the Build Script (Recommended)
 
 ```bash
-cd /path/to/node-fips
-./valkey/8.1.5-ubuntu-22.04-fips/build.sh
+./build.sh
 ```
 
 The build script will:
@@ -172,8 +171,6 @@ The build script will:
 ### Option 2: Manual Docker Build
 
 ```bash
-cd /path/to/node-fips
-
 # Build standard FIPS image with cache
 docker build \
   --secret id=wolfssl_password,src=wolfssl_password.txt \
