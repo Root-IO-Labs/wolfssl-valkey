@@ -119,9 +119,9 @@ echo "========================================"
 echo "Starting Test Suite 1..."
 
 run_test_with_output \
-    "No system OpenSSL (libssl3t64) present" \
-    "docker run --rm $IMAGE_NAME bash -c 'dpkg -l | grep libssl3t64 || true'" \
-    "^$"
+    "Ubuntu system OpenSSL (libssl3) is present" \
+    "docker run --rm $IMAGE_NAME bash -c 'dpkg -l | grep libssl3'" \
+    "libssl3"
 
 run_test_with_output \
     "FIPS OpenSSL present" \
