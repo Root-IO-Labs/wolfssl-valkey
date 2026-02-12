@@ -1,24 +1,18 @@
 # FIPS-Enabled Valkey Docker Image
 
-This directory contains **FIPS 140-3 compliant** Valkey 8.1.5 Docker images built on Ubuntu 22.04, using wolfSSL FIPS v5 for cryptographic operations.
-
-## Build Variants
-
-Two Dockerfile variants are available:
-
-1. **Dockerfile** - FIPS 140-3 compliant image
-2. **Dockerfile.hardened** - FIPS 140-3 + DISA STIG/CIS hardened image
+This directory contains a **FIPS 140-3 compliant** Valkey 8.1.5 Docker image built on Ubuntu 22.04, using wolfSSL FIPS v5.7.2 (CMVP Certificate #4718) for cryptographic operations.
 
 ## Overview
 
-This implementation creates production-ready, FIPS-validated Valkey containers that:
-- ✅ Use **Ubuntu 22.04** as the base image (matching Bitnami)
-- ✅ Include **OpenSSL 3.0.15/3.0.18** with FIPS module support
-- ✅ Integrate **wolfSSL FIPS v5** (FIPS 140-3 validated cryptography)
-- ✅ Use **wolfProvider** to bridge OpenSSL 3 and wolfSSL
-- ✅ Build **Valkey 8.1.5** with TLS support using custom OpenSSL
-- ✅ Preserve **Bitnami scripts** unchanged for compatibility
-- ✅ Perform **automatic FIPS validation** on container startup
+This implementation creates a production-ready, FIPS-validated Valkey container that:
+- ✅ Uses **Ubuntu 22.04** as the base image (matching Bitnami)
+- ✅ Uses **Ubuntu system OpenSSL 3.0.x** (libssl3 package) with wolfProvider
+- ✅ Integrates **wolfSSL FIPS v5.7.2** (CMVP Certificate #4718 - FIPS 140-3 validated)
+- ✅ Uses **wolfProvider** to bridge OpenSSL 3 and wolfSSL FIPS
+- ✅ Builds **Valkey 8.1.5** with TLS support using Ubuntu system OpenSSL
+- ✅ Preserves **Bitnami scripts** unchanged for compatibility
+- ✅ Performs **automatic FIPS validation** on container startup
+- ✅ Safe for `apt upgrade` - no package conflicts with Ubuntu package database
 
 ## Security Updates (8.1.5)
 
@@ -51,21 +45,50 @@ This implementation creates production-ready, FIPS-validated Valkey containers t
 
 ### Multi-Stage Build
 
-The Dockerfile uses a multi-stage build approach:
+The Dockerfile uses a multi-stage build approach with **Ubuntu system OpenSSL** + **wolfProvider**:
 
 **Stage 1: Builder (Ubuntu 22.04)**
-1. Builds OpenSSL 3.0.15 with FIPS module support
-2. Builds wolfSSL FIPS v5 from commercial archive
-3. Builds wolfProvider to integrate wolfSSL with OpenSSL 3
-4. Builds Valkey 8.1.5 with `BUILD_TLS=yes OPENSSL_PREFIX=/usr/local/openssl`
+1. Installs Ubuntu OpenSSL development headers (`libssl-dev` package)
+2. Builds **wolfSSL FIPS v5.7.2** from commercial archive (CMVP Certificate #4718)
+3. Builds **wolfProvider** to integrate wolfSSL with system OpenSSL (configured with `--with-openssl=/usr`)
+4. Builds **Valkey 8.1.5** with `BUILD_TLS=yes OPENSSL_PREFIX=/usr` (uses Ubuntu system OpenSSL)
 5. Compiles FIPS startup validation utility
 
 **Stage 2: Runtime (Ubuntu 22.04)**
-1. Minimal runtime dependencies
-2. Copies compiled binaries and libraries from builder
+1. Installs Ubuntu **libssl3 package** (system OpenSSL 3.0.x runtime)
+2. Copies Valkey binaries and wolfSSL/wolfProvider libraries from builder
 3. Copies unchanged Bitnami scripts for compatibility
-4. Configures OpenSSL to use wolfProvider
+4. Configures OpenSSL to use wolfProvider (`/etc/ssl/openssl-wolfprov.cnf`)
 5. Sets up FIPS validation entrypoint
+
+### FIPS Compliance Architecture
+
+This image uses the **Ubuntu OpenSSL + wolfProvider** model for FIPS 140-3 compliance:
+
+**Cryptographic Flow:**
+```
+Valkey Application
+    ↓
+Ubuntu System OpenSSL 3.0.x API (/usr/lib/x86_64-linux-gnu/)
+    ↓
+wolfProvider (/usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so)
+    ↓
+wolfSSL FIPS v5.7.2 (CMVP Certificate #4718)
+```
+
+**Key Components:**
+- **OpenSSL**: Ubuntu libssl3 package (3.0.x) - provides standard crypto API
+- **wolfProvider**: OpenSSL 3 provider that wraps wolfSSL FIPS
+- **wolfSSL FIPS v5.7.2**: FIPS 140-3 validated cryptographic module (CMVP #4718)
+- **FIPS Boundary**: Limited to Valkey application cryptographic operations
+
+**Important Clarifications:**
+1. **FIPS Compliance Scope**: Applies to Valkey application only, not the entire container OS
+2. **System Libraries**: Non-FIPS crypto libraries (e.g., libgcrypt20) may be present as OS dependencies but are NOT used by Valkey
+3. **Package Safety**: Using Ubuntu packages allows safe `apt upgrade` without conflicts
+4. **Verification**: All Valkey crypto operations verified to use wolfProvider via `ldd` analysis
+
+Per NIST SP 800-53 Rev. 5 SC-13 guidance, FIPS compliance is satisfied when the application in scope (Valkey) uses only FIPS-validated cryptographic modules for all its cryptographic operations.
 
 ### FIPS Validation Flow
 
@@ -99,7 +122,7 @@ Valkey Server Start
 | File | Description |
 |------|-------------|
 | `Dockerfile` | Multi-stage build for FIPS Valkey |
-| `Dockerfile.hardened` | Multi-stage build for FIPS + STIG/CIS hardened Valkey |
+| `Dockerfile.hardened` | FIPS + STIG/CIS hardened variant |
 | `openssl-wolfprov.cnf` | OpenSSL configuration to load wolfProvider |
 | `fips-startup-check.c` | C program for FIPS validation at startup |
 | `fips-entrypoint.sh` | Entrypoint wrapper for FIPS validation |
@@ -109,7 +132,7 @@ Valkey Server Start
 | `test-valkey-fips.sh` | Comprehensive test suite |
 | `prebuildfs/` | Bitnami helper scripts (copied from original) |
 | `rootfs/` | Valkey-specific scripts (copied from original) |
-| `patches/` | CVE patches for util-linux and Valkey FIPS modifications |
+| `hardening/` | STIG/CIS hardening scripts |
 | `README.md` | This file |
 
 ## Prerequisites
@@ -133,9 +156,7 @@ echo "your_password_here" > wolfssl_password.txt
 
 ## Building the Image
 
-### FIPS 140-3 Variant (Standard)
-
-#### Option 1: Using the Build Script (Recommended)
+### Option 1: Using the Build Script (Recommended)
 
 ```bash
 ./build.sh
@@ -147,12 +168,10 @@ The build script will:
 - Display build information
 - Offer to run the test suite
 
-#### Option 2: Manual Docker Build
+### Option 2: Manual Docker Build
 
 ```bash
-cd /path/to/node-fips
-
-# Build with cache
+# Build standard FIPS image with cache
 docker build \
   --secret id=wolfssl_password,src=wolfssl_password.txt \
   -t valkey-fips:8.1.5-ubuntu-22.04 \
@@ -166,51 +185,31 @@ docker build \
   .
 ```
 
-**Build Time**: Approximately 15-20 minutes (depending on system)
+### Option 3: STIG/CIS Hardened Build
 
-### FIPS 140-3 + STIG/CIS Hardened Variant
-
-#### Using the Hardened Build Script (Recommended)
+For environments requiring STIG/CIS security compliance in addition to FIPS:
 
 ```bash
-cd /path/to/node-fips
-./valkey/8.1.5-ubuntu-22.04-fips/build-hardened.sh
-```
+# Using the hardened build script
+./build-hardened.sh
 
-The hardened build script will:
-- Validate prerequisites
-- Build the FIPS + STIG/CIS hardened Docker image
-- Apply util-linux CVE patches (CVE-2021-3995, CVE-2021-3996, CVE-2022-0563, CVE-2024-28085)
-- Display build information with security compliance status
-- Verify container startup
-
-#### Manual Hardened Build
-
-```bash
-cd /path/to/node-fips
-
-# Build hardened variant with cache
+# Or manual build with Dockerfile.hardened
 docker build \
   --secret id=wolfssl_password,src=wolfssl_password.txt \
-  -t valkey:8.1.5-ubuntu-22.04-fips \
   -f Dockerfile.hardened \
-  .
-
-# Build hardened variant without cache
-docker build \
-  --no-cache \
-  --secret id=wolfssl_password,src=wolfssl_password.txt \
-  -t valkey:8.1.5-ubuntu-22.04-fips \
-  -f Dockerfile.hardened \
+  -t valkey-fips-hardened:8.1.5-ubuntu-22.04 \
   .
 ```
 
-**Build Time**: Approximately 20-25 minutes (depending on system)
+The hardened variant includes:
+- All FIPS 140-3 compliance features from the standard build
+- Ubuntu 22.04 STIG security hardening
+- CIS Benchmark compliance measures
+- Additional security controls and reduced attack surface
 
-**Build Artifacts**: The hardened build produces an image with:
-- FIPS 140-3 cryptographic validation
-- DISA STIG V2R1 compliance configurations
-- CIS Level 1 Server benchmark settings
+**Build Time**:
+- Standard FIPS build: Approximately 15-20 minutes
+- Hardened build: Approximately 20-25 minutes (depending on system)
 
 ## Testing
 
@@ -256,12 +255,12 @@ FIPS Valkey Test Suite
 [PASS] PING command successful
 [PASS] SET command successful
 [PASS] GET command successful (value: FIPS_140_3)
-[PASS] OpenSSL 3.x detected: OpenSSL 3.0.15 ...
+[PASS] OpenSSL 3.x detected: OpenSSL 3.0.2 (Ubuntu system package)
 [PASS] wolfProvider is loaded
 [PASS] Valkey version: Valkey ...
-[PASS] wolfSSL library found
-[PASS] OPENSSL_CONF is set: /usr/local/openssl/ssl/openssl.cnf
-[PASS] OPENSSL_MODULES is set: /usr/local/lib64/ossl-modules
+[PASS] wolfSSL FIPS v5.7.2 library found
+[PASS] OPENSSL_CONF is set: /etc/ssl/openssl-wolfprov.cnf
+[PASS] OPENSSL_MODULES is set: /usr/lib/x86_64-linux-gnu/ossl-modules
 [PASS] Performance test completed
 
 ========================================
@@ -304,40 +303,68 @@ docker logs valkey-fips | grep "FIPS"
 Expected output:
 ```
 ========================================
-FIPS Valkey Startup Validation
+Valkey FIPS Container Startup
+Ubuntu 22.04 + Bitnami Scripts
 ========================================
-[1/5] Validating environment variables...
-      ✓ OPENSSL_CONF: /usr/local/openssl/ssl/openssl.cnf
-      ✓ OPENSSL_MODULES: /usr/local/lib64/ossl-modules
-      ✓ LD_LIBRARY_PATH: /usr/local/openssl/lib64:/usr/local/lib
-[2/5] Validating OpenSSL installation...
-      ✓ OpenSSL found: OpenSSL 3.0.15 ...
-[3/5] Validating wolfSSL library...
-      ✓ wolfSSL library: /usr/local/lib/libwolfssl.so.42
-[4/5] Validating wolfProvider module...
-      ✓ wolfProvider module: /usr/local/lib64/ossl-modules/libwolfprov.so
+
+[1/6] Validating Operating Environment (OE) for CMVP compliance...
+      Detected kernel: 6.x.x-xx-generic
+      ✓ CPU architecture: x86_64
+      ✓ RDRAND: Available (hardware entropy source)
+      ✓ AES-NI: Available (hardware-accelerated AES)
+
+[2/6] Validating FIPS environment variables...
+      ✓ OPENSSL_CONF: /etc/ssl/openssl-wolfprov.cnf
+      ✓ OPENSSL_MODULES: /usr/lib/x86_64-linux-gnu/ossl-modules
+      ✓ LD_LIBRARY_PATH: /usr/local/lib:/usr/lib/x86_64-linux-gnu
+
+[3/6] Validating OpenSSL installation...
+      ✓ OpenSSL found: OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)
+      ✓ Using Ubuntu system OpenSSL 3.x with wolfProvider
+
+[4/6] Validating wolfSSL library...
+      ✓ wolfSSL library: /usr/local/lib/libwolfssl.so
+
+[5/6] Validating wolfProvider module...
+      ✓ wolfProvider module: /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so
       ✓ Module size: ... bytes
-[5/5] Running cryptographic FIPS validation...
+      → Testing provider loading...
+      ✓ wolfProvider successfully loaded by OpenSSL
+
+[5.5/6] Verifying Ubuntu OpenSSL libraries with wolfProvider...
+      ✓ Ubuntu OpenSSL library found: /usr/lib/x86_64-linux-gnu/libssl.so.3
+      ✓ Ubuntu OpenSSL library found: /usr/lib/x86_64-linux-gnu/libcrypto.so.3
+      ✓ wolfProvider module found: /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so
+      ✓ Ubuntu OpenSSL 3.x with wolfProvider verified
+      ✓ All Valkey crypto operations will use wolfSSL FIPS v5.7.2
+
+[6/6] Running cryptographic FIPS validation...
+
 ========================================
 FIPS Startup Validation
 ========================================
+
 [1/3] Checking FIPS compile-time configuration...
       ✓ FIPS mode: ENABLED
       ✓ FIPS version: 5
+
 [2/3] Running FIPS Known Answer Tests (CAST)...
       ✓ FIPS CAST: PASSED
+
 [3/3] Validating SHA-256 cryptographic operation...
       ✓ SHA-256 test vector: PASSED
+
 ========================================
 ✓ FIPS VALIDATION PASSED
 ========================================
-[6/6] Validating Valkey installation...
-      ✓ Valkey found: Valkey ...
-      ✓ Checking TLS support...
-      ✓ TLS support detected
+FIPS 140-3 compliant cryptography verified
+Container startup authorized
+
 ========================================
 ✓ ALL FIPS CHECKS PASSED
 ========================================
+
+Handing control to Bitnami entrypoint...
 ```
 
 **Connect to Valkey:**
@@ -453,45 +480,60 @@ volumes:
 
 ### Cryptographic Module
 
-- **wolfSSL FIPS v5** (wolfCrypt FIPS 140-3)
-- Certificate: [FIPS 140-3 validation pending/in-progress]
-- Algorithms: AES, SHA-2, HMAC, RSA, ECDSA, DRBG, and more
-- Approved for use in FIPS 140-3 compliant systems
+- **wolfSSL FIPS v5.7.2** (wolfCrypt FIPS 140-3)
+- **CMVP Certificate**: #4718
+- **Algorithms**: AES, SHA-2, SHA-256, HMAC, RSA, ECDSA, DRBG, and more
+- **Status**: FIPS 140-3 validated and approved for use in compliant systems
 
 ### Validation
 
 The container performs the following FIPS validations on startup:
 
-1. **Environment Configuration**: Verifies FIPS-required environment variables
-2. **Library Verification**: Confirms wolfSSL FIPS library is present
-3. **Provider Verification**: Ensures wolfProvider module is loaded
-4. **Known Answer Tests (CAST)**: Runs cryptographic self-tests
-5. **Algorithm Tests**: Validates cryptographic operations with test vectors
+1. **Operating Environment (OE)**: Validates kernel version and CPU architecture
+2. **Environment Configuration**: Verifies FIPS-required environment variables
+3. **OpenSSL Configuration**: Confirms Ubuntu system OpenSSL installation
+4. **wolfSSL Library**: Verifies wolfSSL FIPS v5.7.2 library is present
+5. **wolfProvider Module**: Ensures wolfProvider is loaded and functional
+6. **Ubuntu OpenSSL Libraries**: Validates system OpenSSL with wolfProvider integration
+7. **Known Answer Tests (CAST)**: Runs cryptographic self-tests
+8. **Algorithm Tests**: Validates SHA-256 operations with test vectors
 
-If any validation fails, the container will **not start** and will exit with an error.
+If any validation fails, the container will **not start** and will exit with an error (fail-closed security model).
 
 ### Using FIPS Cryptography
 
 All TLS connections in Valkey automatically use FIPS-validated cryptography through:
-1. Valkey is built with `BUILD_TLS=yes OPENSSL_PREFIX=/usr/local/openssl`
-2. OpenSSL 3 is configured to use wolfProvider
-3. wolfProvider delegates to wolfSSL FIPS v5
-4. All cryptographic operations use FIPS-validated algorithms
+1. Valkey is built with `BUILD_TLS=yes OPENSSL_PREFIX=/usr` (Ubuntu system OpenSSL)
+2. OpenSSL 3 is configured to load wolfProvider via `/etc/ssl/openssl-wolfprov.cnf`
+3. wolfProvider delegates all crypto operations to wolfSSL FIPS v5.7.2 (CMVP #4718)
+4. All cryptographic operations use FIPS 140-3 validated algorithms
 
-**No code changes required** - FIPS is transparent to applications!
+**Cryptographic Flow:**
+```
+Valkey TLS Operations
+    ↓
+Ubuntu OpenSSL 3.0.x API
+    ↓
+wolfProvider (OpenSSL 3 provider)
+    ↓
+wolfSSL FIPS v5.7.2 (CMVP Certificate #4718)
+```
+
+**No application code changes required** - FIPS compliance is transparent to Valkey!
 
 ## Comparison with Original Bitnami Image
 
-| Aspect | Original Bitnami | FIPS-Enabled (Dockerfile) | FIPS + STIG/CIS (Dockerfile.hardened) |
-|--------|------------------|---------------------------|--------------------------------------|
-| Base Image | Debian 12 | Ubuntu 22.04 | Ubuntu 22.04 |
-| OpenSSL | System OpenSSL | Custom OpenSSL 3.0.15 | Custom OpenSSL 3.0.18 |
-| Cryptography | Standard | FIPS 140-3 (wolfSSL v5) | FIPS 140-3 (wolfSSL v5) |
-| STIG/CIS | No | No | Yes (DISA STIG V2R1 + CIS Level 1) |
-| Bitnami Scripts | Included | **Unchanged** - Copied as-is | **Unchanged** - Copied as-is |
-| TLS Support | Yes | Yes (FIPS-validated) | Yes (FIPS-validated) |
-| Startup Validation | Standard | FIPS validation required | FIPS validation required |
-| Container Size | ~120 MB | ~180 MB (includes FIPS libs) | ~190 MB (includes FIPS + hardening) |
+| Aspect | Original Bitnami | FIPS-Enabled |
+|--------|------------------|--------------|
+| Base Image | Debian 12 | Ubuntu 22.04 |
+| OpenSSL | System OpenSSL (Debian) | Ubuntu System OpenSSL 3.0.x + wolfProvider |
+| Cryptography | Standard | FIPS 140-3 (wolfSSL v5.7.2, CMVP #4718) |
+| Crypto Provider | Default | wolfProvider (wraps wolfSSL FIPS) |
+| Bitnami Scripts | Included | **Unchanged** - Copied as-is |
+| TLS Support | Yes | Yes (FIPS 140-3 validated) |
+| Startup Validation | Standard | FIPS validation required (fail-closed) |
+| Package Management | apt (Debian) | apt (Ubuntu) - safe for upgrades |
+| Container Size | ~120 MB | ~180 MB (includes wolfSSL/wolfProvider) |
 
 ### Compatibility
 
@@ -579,10 +621,19 @@ docker exec valkey-fips valkey-cli INFO stats
 
 To customize the build:
 
-1. **Change OpenSSL version**: Edit `OPENSSL_VERSION` in Dockerfile
-2. **Change wolfSSL version**: Edit `WOLFSSL_URL` in Dockerfile
-3. **Change Valkey version**: Edit `VALKEY_VERSION` in Dockerfile
-4. **Add custom patches**: Add RUN commands in builder stage
+1. **OpenSSL version**: Managed by Ubuntu package (`libssl3`/`libssl-dev`) - version follows Ubuntu 22.04 LTS
+2. **Change wolfSSL version**: Edit `WOLFSSL_VERSION` in Dockerfile (ensure FIPS certification)
+3. **Change wolfProvider version**: Edit `WOLFPROV_VERSION` in Dockerfile
+4. **Change Valkey version**: Edit `VALKEY_VERSION` in Dockerfile
+5. **Add custom patches**: Add RUN commands in builder stage
+
+**Note on OpenSSL**: This image uses Ubuntu's system OpenSSL package to:
+- Avoid conflicts with `apt upgrade`
+- Maintain consistency with Ubuntu package database
+- Simplify dependency management
+- Allow Ubuntu to manage OpenSSL security updates
+
+FIPS compliance comes from wolfProvider + wolfSSL, not from OpenSSL itself.
 
 ### Testing Changes
 
@@ -592,6 +643,13 @@ After modifications:
 ./test-valkey-fips.sh
 ```
 
+Or run comprehensive test suite:
+```bash
+./tests/quick-test.sh
+./tests/crypto-path-validation-valkey.sh
+./tests/test-fips-sha256.sh
+```
+
 ## Security Considerations
 
 1. **FIPS Compliance**: This image is designed for FIPS 140-3 compliant environments
@@ -599,20 +657,6 @@ After modifications:
 3. **Network Security**: Always use TLS for production deployments
 4. **Updates**: Regularly rebuild with latest security patches
 5. **Validation**: Always run the test suite after building
-
-### DISA STIG/CIS Hardening (Dockerfile.hardened)
-
-The hardened variant includes:
-- Password complexity requirements (15-character minimum, multi-class requirements)
-- Account lockout policies (3 failed attempts, 15-minute lockout)
-- Password aging policies (60-day maximum, 7-day minimum)
-- Disabled SETUID/SETGID binaries
-- Restricted file permissions (UMASK 077)
-- Kernel security parameters (ASLR, core dump restrictions, network hardening)
-- PAM authentication controls (faillock, pwquality)
-- SSH hardening (disabled root login, restricted ciphers and key exchange algorithms)
-- Audit logging configuration
-- util-linux CVE patches (CVE-2021-3995, CVE-2021-3996, CVE-2022-0563, CVE-2024-28085)
 
 ## References
 

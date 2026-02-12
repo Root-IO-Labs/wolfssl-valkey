@@ -14,32 +14,48 @@ ENV OPENSSL_PREFIX=/usr/local/openssl WOLFSSL_PREFIX=/usr/local WOLFPROV_PREFIX=
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl wget git autoconf automake libtool pkg-config p7zip-full perl bison gettext autopoint libncurses-dev libncursesw5-dev; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl wget git autoconf automake libtool pkg-config p7zip-full perl bison gettext autopoint libncurses-dev libncursesw5-dev libssl-dev; \
     update-ca-certificates; \
     rm -rf /var/lib/apt/lists/*
 
+# Fetch and process Mozilla CA bundle for runtime stage
 RUN set -eux; \
+    echo "Fetching Mozilla CA bundle..."; \
+    curl -L -o /tmp/cacert.pem https://curl.se/ca/cacert.pem; \
+    mkdir -p /usr/local/share/ca-certificates-mozilla; \
     cd /tmp; \
-    wget --no-check-certificate https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz; \
-    tar -xzf openssl-${OPENSSL_VERSION}.tar.gz; \
-    cd openssl-${OPENSSL_VERSION}; \
-    ./Configure --prefix=${OPENSSL_PREFIX} --openssldir=${OPENSSL_PREFIX}/ssl --libdir=lib64 enable-fips shared linux-x86_64; \
-    make -j"$(nproc)"; make install_sw; make install_fips; make install_ssldirs; \
-    cd ..; rm -rf openssl-${OPENSSL_VERSION}*
+    csplit -s -z -f cert- cacert.pem '/-----BEGIN CERTIFICATE-----/' '{*}'; \
+    for cert in cert-*; do \
+        if grep -q 'BEGIN CERTIFICATE' "$cert"; then \
+            mv "$cert" "/usr/local/share/ca-certificates-mozilla/${cert}.crt"; \
+        fi; \
+    done; \
+    rm -f /tmp/cacert.pem /tmp/cert-*; \
+    echo "✓ Mozilla CA bundle processed ($(ls /usr/local/share/ca-certificates-mozilla/cert-*.crt 2>/dev/null | wc -l) certificates)"
 
-ENV PATH="${OPENSSL_PREFIX}/bin:${PATH}" LD_LIBRARY_PATH="${OPENSSL_PREFIX}/lib64" PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib64/pkgconfig"
-RUN openssl version && openssl list -providers && ls -la ${OPENSSL_PREFIX}/lib64/ossl-modules/
+################################################################################
+# Use Ubuntu's OpenSSL 3 package (no need to build from source)
+# Ubuntu 22.04 provides libssl3 (OpenSSL 3.0.x) which supports providers
+# We'll configure it with wolfProvider in the runtime stage
+#
+# Benefits of using Ubuntu's OpenSSL:
+# - APT package consistency (no conflicts with libssl3)
+# - Safe for apt upgrades
+# - No custom build maintenance required
+################################################################################
+
+ENV PATH="/usr/bin:/usr/local/bin:${PATH}" LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu" PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig"
 
 COPY test-fips.c /tmp/test-fips.c
 
 RUN --mount=type=secret,id=wolfssl_password set -eux; \
     mkdir -p /usr/src; \
-    LD_LIBRARY_PATH="" curl -k -o /tmp/wolfssl.7z "${WOLFSSL_URL}"; \
+    LD_LIBRARY_PATH="" curl -L -o /tmp/wolfssl.7z "${WOLFSSL_URL}"; \
     PASSWORD=$(cat /run/secrets/wolfssl_password | tr -d '\n\r'); \
     7z x /tmp/wolfssl.7z -o/usr/src -p"${PASSWORD}"; rm /tmp/wolfssl.7z; \
     mv /usr/src/wolfssl* /usr/src/wolfssl; cd /usr/src/wolfssl; \
     sed -i '/^#ifdef WOLFSSL_PYTHON/,/^#endif/d' wolfssl/wolfcrypt/settings.h || true; \
-    ./configure --prefix=${WOLFSSL_PREFIX} --enable-fips=v5 --enable-opensslcoexist --enable-cmac --enable-keygen --enable-sha --enable-des3 --enable-aesctr --enable-aesccm --enable-x963kdf --enable-compkey --enable-certgen --enable-aeskeywrap --enable-enckeys --enable-base16 --with-eccminsz=192 CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=1024"; \
+    ./configure --prefix=${WOLFSSL_PREFIX} --enable-fips=v5 --enable-opensslcoexist --enable-cmac --enable-keygen --enable-sha --enable-aesctr --enable-aesccm --enable-x963kdf --enable-compkey --enable-certgen --enable-aeskeywrap --enable-enckeys --enable-base16 --with-eccminsz=192 CPPFLAGS="-DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT -DWC_RSA_NO_PADDING -DWOLFSSL_PUBLIC_MP -DHAVE_PUBLIC_FFDHE -DWOLFSSL_DH_EXTRA -DWOLFSSL_PSS_LONG_SALT -DWOLFSSL_PSS_SALT_LEN_DISCOVER -DRSA_MIN_SIZE=2048"; \
     make -j"$(nproc)"; ./fips-hash.sh; make -j"$(nproc)"; make install; ldconfig; \
     cd /; rm -rf /usr/src/wolfssl
 
@@ -49,23 +65,35 @@ RUN set -eux; gcc /tmp/test-fips.c -o /tmp/test-fips -lwolfssl -I${WOLFSSL_PREFI
 COPY fips-startup-check.c /tmp/fips-startup-check.c
 RUN set -eux; gcc /tmp/fips-startup-check.c -o /usr/local/bin/fips-startup-check -lwolfssl -I${WOLFSSL_PREFIX}/include; chmod +x /usr/local/bin/fips-startup-check; rm /tmp/fips-startup-check.c
 
+################################################################################
+# Build wolfProvider for Ubuntu's system OpenSSL
+################################################################################
 RUN set -eux; \
     cd /tmp; \
     git clone --depth 1 --branch ${WOLFPROV_VERSION} ${WOLFPROV_REPO} wolfProvider; \
-    cd wolfProvider; ./autogen.sh; \
-    ./configure --prefix=${WOLFPROV_PREFIX} --with-openssl=${OPENSSL_PREFIX} --with-wolfssl=${WOLFSSL_PREFIX}; \
-    make -j"$(nproc)"; make install || true; \
-    if [ ! -f "${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so" ]; then \
-        mkdir -p ${OPENSSL_PREFIX}/lib64/ossl-modules; \
-        cp -v .libs/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/ 2>/dev/null || cp -v src/.libs/libwolfprov.so* ${OPENSSL_PREFIX}/lib64/ossl-modules/ || true; \
+    cd wolfProvider; \
+    ./autogen.sh; \
+    # Configure wolfProvider to use Ubuntu's system OpenSSL (at /usr)
+    ./configure \
+        --prefix=${WOLFPROV_PREFIX} \
+        --with-openssl=/usr \
+        --with-wolfssl=${WOLFSSL_PREFIX} \
+    ; \
+    make -j"$(nproc)"; \
+    # Install wolfProvider to Ubuntu's OpenSSL module directory
+    mkdir -p /usr/lib/x86_64-linux-gnu/ossl-modules; \
+    if [ -f ".libs/libwolfprov.so" ]; then \
+        cp -v .libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    elif [ -f "src/.libs/libwolfprov.so" ]; then \
+        cp -v src/.libs/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/; \
     fi; \
     cd ..; rm -rf wolfProvider
 
+# Verify wolfProvider installation
 RUN set -eux; \
-    if [ -d "${OPENSSL_PREFIX}/lib64/ossl-modules" ]; then ls -la ${OPENSSL_PREFIX}/lib64/ossl-modules/; fi; \
-    if [ -d "${OPENSSL_PREFIX}/lib/ossl-modules" ]; then ls -la ${OPENSSL_PREFIX}/lib/ossl-modules/; fi; \
-    if [ -f "${OPENSSL_PREFIX}/lib64/ossl-modules/libwolfprov.so" ] || [ -f "${OPENSSL_PREFIX}/lib/ossl-modules/libwolfprov.so" ] || [ -f "${WOLFPROV_PREFIX}/lib64/ossl-modules/libwolfprov.so" ] || [ -f "${WOLFPROV_PREFIX}/lib/ossl-modules/libwolfprov.so" ]; then \
-        echo "wolfProvider module found and verified"; \
+    ls -la /usr/lib/x86_64-linux-gnu/ossl-modules/; \
+    if [ -f "/usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so" ]; then \
+        echo "✓ wolfProvider module installed successfully"; \
     else \
         echo "ERROR: wolfProvider module not found"; exit 1; \
     fi
@@ -84,7 +112,7 @@ RUN set -eux; \
     cd /tmp; \
     echo "Building util-linux ${UTIL_LINUX_VERSION} from source with ALL 4 CVE patches..."; \
     # Download util-linux source matching Ubuntu 22.04 version
-    wget --no-check-certificate https://www.kernel.org/pub/linux/utils/util-linux/v2.37/util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
+    curl -L -O https://www.kernel.org/pub/linux/utils/util-linux/v2.37/util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
     tar xf util-linux-${UTIL_LINUX_VERSION}.tar.xz; \
     cd util-linux-${UTIL_LINUX_VERSION}; \
     # Apply ALL 4 CVE patches
@@ -154,7 +182,7 @@ COPY patches/valkey-fips-sha256-complete.patch /tmp/valkey-fips-sha256.patch
 
 RUN set -eux; \
     cd /tmp; \
-    wget --no-check-certificate https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz; \
+    curl -L -o ${VALKEY_VERSION}.tar.gz https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz; \
     tar xzf ${VALKEY_VERSION}.tar.gz; cd valkey-${VALKEY_VERSION}; \
     # Apply FIPS SHA-256 patch to replace SHA-1 with OpenSSL SHA-256
     echo "Applying FIPS SHA-256 patch..."; \
@@ -165,7 +193,26 @@ RUN set -eux; \
     echo "  - Replaces SHA-1 with OpenSSL SHA-256 in debug.c (DEBUG DIGEST)"; \
     echo "  - Updates function declaration in server.h (sha1hex -> sha256hex)"; \
     echo "✓ Valkey 8.1.5 includes all CVE fixes (CVE-2025-49844, 46817, 46818, 46819)"; \
-    make BUILD_TLS=yes USE_SYSTEMD=no OPENSSL_PREFIX=${OPENSSL_PREFIX} -j"$(nproc)"; \
+    # Build Valkey against Ubuntu's system OpenSSL
+    # Set environment variables for SSL library location
+    export OPENSSL_PREFIX=/usr; \
+    export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}; \
+    # First, clean and build all dependencies with SSL support
+    make distclean; \
+    cd deps; \
+    make distclean || true; \
+    # Build hiredis with explicit SSL support using system OpenSSL
+    cd hiredis; \
+    make USE_SSL=1 \
+        SSL_CFLAGS="-I/usr/include" \
+        SSL_LDFLAGS="-L/usr/lib/x86_64-linux-gnu" \
+        SSL_LIBS="-lssl -lcrypto" \
+        static; \
+    cd ../..; \
+    # Now build Valkey with TLS, it will use the hiredis we just built
+    make BUILD_TLS=yes USE_SYSTEMD=no \
+        OPENSSL_PREFIX=/usr \
+        -j"$(nproc)"; \
     make install PREFIX=/opt/bitnami/valkey; \
     mkdir -p /opt/bitnami/valkey/etc; \
     cp valkey.conf /opt/bitnami/valkey/etc/valkey.conf; \
@@ -225,38 +272,67 @@ ENV HOME="/" OS_ARCH="${TARGETARCH:-amd64}" OS_FLAVOUR="ubuntu-22.04-fips" OS_NA
 COPY --from=builder /opt/bitnami-scripts/prebuildfs /
 SHELL ["/bin/bash", "-o", "errexit", "-o", "nounset", "-o", "pipefail", "-c"]
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates libgomp1 procps; \
-    apt-get clean; rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update -y && apt-get clean && rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# STIG/CIS: Install security packages (before OpenSSL removal)
-RUN apt-get update && apt-get install -y --no-install-recommends libpam-pwquality libpam-runtime auditd rsyslog-openssl sudo && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN set -eux; \
-    rm -f /usr/lib/x86_64-linux-gnu/libssl.so* /usr/lib/x86_64-linux-gnu/libcrypto.so* /lib/x86_64-linux-gnu/libssl.so* /lib/x86_64-linux-gnu/libcrypto.so* /usr/bin/openssl || true; \
-    dpkg --remove --force-depends libssl3 2>/dev/null || true; \
-    if [ -f "/usr/lib/x86_64-linux-gnu/libssl.so.3" ]; then echo "ERROR: System OpenSSL still present!"; exit 1; fi
-
-COPY --from=builder /usr/local/openssl /usr/local/openssl
+################################################################################
+# Install FIPS components
+################################################################################
+# Copy wolfSSL FIPS library (still built in builder stage)
 COPY --from=builder /usr/local/lib/libwolfssl* /usr/local/lib/
 COPY --from=builder /usr/local/include/wolfssl /usr/local/include/wolfssl
 
-RUN mkdir -p /usr/local/lib64/ossl-modules
-RUN --mount=type=bind,from=builder,source=/usr/local/openssl,target=/mnt/openssl set -eux; \
-    if [ -d "/mnt/openssl/lib64/ossl-modules" ] && [ -f "/mnt/openssl/lib64/ossl-modules/libwolfprov.so" ]; then \
-        cp -rv /mnt/openssl/lib64/ossl-modules/libwolfprov.so* /usr/local/lib64/ossl-modules/; \
-    elif [ -d "/mnt/openssl/lib/ossl-modules" ] && [ -f "/mnt/openssl/lib/ossl-modules/libwolfprov.so" ]; then \
-        cp -rv /mnt/openssl/lib/ossl-modules/libwolfprov.so* /usr/local/lib64/ossl-modules/; \
-    fi; \
-    if [ ! -f "/usr/local/lib64/ossl-modules/libwolfprov.so" ]; then echo "ERROR: wolfProvider not copied!"; exit 1; fi
+# Copy wolfProvider module from builder
+COPY --from=builder /usr/lib/x86_64-linux-gnu/ossl-modules/libwolfprov.so* /usr/lib/x86_64-linux-gnu/ossl-modules/
+
+# Install CA certificates from Mozilla bundle (avoids ca-certificates package)
+COPY --from=builder /usr/local/share/ca-certificates-mozilla /usr/local/share/ca-certificates
+
+RUN set -eux; \
+    echo "Installing Mozilla CA Certificates..."; \
+    mkdir -p /etc/ssl/certs /usr/share/ca-certificates; \
+    cp -a /usr/local/share/ca-certificates/* /usr/share/ca-certificates/ 2>/dev/null || true; \
+    cat /usr/local/share/ca-certificates/*.crt > /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true; \
+    ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt 2>/dev/null || true; \
+    CERT_COUNT=$(ls /usr/local/share/ca-certificates/*.crt 2>/dev/null | wc -l); \
+    echo "✓ Installed ${CERT_COUNT} CA certificates from Mozilla"
+
+################################################################################
+# Install Ubuntu's OpenSSL 3 with wolfProvider
+# Install runtime dependencies (NO ca-certificates package)
+################################################################################
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libssl3 \
+        openssl \
+        libgomp1 \
+        procps \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    \
+    # Configure dynamic linker to find wolfSSL
+    echo "/usr/local/lib" > /etc/ld.so.conf.d/fips-wolfssl.conf; \
+    ldconfig
+
+# STIG/CIS: Install security packages
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libpam-pwquality \
+        libpam-runtime \
+        auditd \
+        rsyslog \
+        sudo \
+        libopenscap8 \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/bitnami/valkey /opt/bitnami/valkey
 COPY --from=builder /opt/bitnami-scripts/rootfs /
 COPY --from=builder /opt/util-linux /opt/util-linux
-COPY openssl-wolfprov.cnf /usr/local/openssl/ssl/openssl.cnf
+
+# Copy OpenSSL configuration with wolfProvider
+COPY openssl-wolfprov.cnf /etc/ssl/openssl-wolfprov.cnf
 
 # Install custom util-linux binaries to /usr/bin (force overwrite system binaries)
 RUN set -eux; \
@@ -283,10 +359,10 @@ RUN set -eux; \
     echo "✓ util-linux binaries installed successfully"; \
     echo "========================================"
 
-ENV PATH="/usr/local/openssl/bin:/usr/local/bin:/usr/local/sbin:/opt/bitnami/common/bin:/opt/bitnami/valkey/bin:${PATH}" \
-    LD_LIBRARY_PATH="/usr/local/openssl/lib64:/usr/local/lib" \
-    OPENSSL_CONF=/usr/local/openssl/ssl/openssl.cnf \
-    OPENSSL_MODULES=/usr/local/lib64/ossl-modules
+ENV PATH="/usr/bin:/usr/local/bin:/usr/local/sbin:/opt/bitnami/common/bin:/opt/bitnami/valkey/bin:${PATH}" \
+    LD_LIBRARY_PATH="/usr/local/lib:/usr/lib/x86_64-linux-gnu" \
+    OPENSSL_CONF=/etc/ssl/openssl-wolfprov.cnf \
+    OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules
 
 RUN ldconfig
 
